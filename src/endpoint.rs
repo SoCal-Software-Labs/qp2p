@@ -12,7 +12,7 @@ use super::igd::{forward_port, IgdError};
 use super::wire_msg::WireMsg;
 use super::{
     config::{Config, InternalConfig, RetryConfig, SERVER_NAME},
-    connection::{Connection, ConnectionIncoming},
+    connection::{Connection, ConnectionIncoming, RecvStream},
     error::{
         ClientEndpointError, ConnectionError, EndpointError, RecvError, RpcError,
         SerializationError,
@@ -23,11 +23,14 @@ use quinn::Endpoint as QuinnEndpoint;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
+    collections::HashMap,
 };
 use tokio::sync::broadcast::{self, Sender};
+use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver as MpscReceiver};
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, trace, warn};
+use bytes::Bytes;
 
 // Number of seconds before timing out the IGD request to forward a port.
 #[cfg(feature = "igd")]
@@ -66,6 +69,8 @@ pub struct Endpoint {
     retry_config: Arc<RetryConfig>,
 
     termination_tx: Sender<()>,
+    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -128,12 +133,15 @@ impl Endpoint {
         // set client config used for any outgoing connections
         quinn_endpoint.set_default_client_config(config.client);
 
+        let waiting_pseudo_bi_streams = Arc::new(RwLock::new(HashMap::new()));
+
         let mut endpoint = Self {
             local_addr: quinn_endpoint_socket_addr,
             public_addr: None, // we'll set this below
             quinn_endpoint,
             retry_config: config.retry_config,
             termination_tx,
+            waiting_pseudo_bi_streams: waiting_pseudo_bi_streams.clone()
         };
 
         let contact = endpoint.connect_to_any(contacts).await;
@@ -173,6 +181,7 @@ impl Endpoint {
             connection_tx,
             endpoint.quinn_endpoint.clone(),
             endpoint.retry_config.clone(),
+            waiting_pseudo_bi_streams.clone(),
         );
 
         if let Some((contact, _)) = contact.as_ref() {
@@ -211,6 +220,8 @@ impl Endpoint {
         // retrieve the actual used socket addr
         let local_quinn_socket_addr = quinn_endpoint.local_addr()?;
 
+        let waiting_pseudo_bi_streams = Arc::new(RwLock::new(HashMap::new()));
+
         quinn_endpoint.set_default_client_config(config.client);
 
         let endpoint = Self {
@@ -219,6 +230,7 @@ impl Endpoint {
             quinn_endpoint,
             retry_config: config.retry_config,
             termination_tx,
+            waiting_pseudo_bi_streams,
         };
 
         Ok(endpoint)
@@ -371,6 +383,7 @@ impl Endpoint {
                             self.quinn_endpoint.clone(),
                             Some(self.retry_config.clone()),
                             new_conn,
+                            self.waiting_pseudo_bi_streams.clone()
                         );
 
                         Ok((connection, connection_incoming))
@@ -495,6 +508,7 @@ pub(super) fn listen_for_incoming_connections(
     connection_tx: mpsc::Sender<(Connection, ConnectionIncoming)>,
     quinn_endpoint: quinn::Endpoint,
     retry_config: Arc<RetryConfig>,
+    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
 ) {
     let _ = tokio::spawn(async move {
         loop {
@@ -505,6 +519,7 @@ pub(super) fn listen_for_incoming_connections(
                             quinn_endpoint.clone(),
                             Some(retry_config.clone()),
                             connection,
+                            waiting_pseudo_bi_streams.clone()
                         );
 
                         if connection_tx

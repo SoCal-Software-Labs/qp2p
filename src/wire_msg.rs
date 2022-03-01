@@ -27,6 +27,8 @@ pub(crate) enum WireMsg {
     EndpointEchoResp(SocketAddr),
     EndpointVerificationReq(SocketAddr),
     EndpointVerificationResp(bool),
+    EndpointPseudoBiStreamReq(Bytes),
+    EndpointPseudoBiStreamResp(Bytes),
     UserMsg(Bytes),
 }
 
@@ -115,7 +117,7 @@ impl WireMsg {
 
 impl fmt::Display for WireMsg {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
+        match &*self {
             WireMsg::UserMsg(ref m) => {
                 write!(f, "WireMsg::UserMsg({})", utils::bin_data_format(&*m))
             }
@@ -127,7 +129,17 @@ impl fmt::Display for WireMsg {
             WireMsg::EndpointVerificationResp(valid) => write!(
                 f,
                 "WireMsg::EndpointEchoResp({})",
-                if valid { "Valid" } else { "Invalid" }
+                if *valid { "Valid" } else { "Invalid" }
+            ),
+            WireMsg::EndpointPseudoBiStreamResp(id) => write!(
+                f,
+                "WireMsg::EndpointPseudoBiStreamResp({:?})",
+                id
+            ),
+            WireMsg::EndpointPseudoBiStreamReq(id) => write!(
+                f,
+                "WireMsg::EndpointPseudoBiStreamReq({:?})",
+                id
             ),
         }
     }

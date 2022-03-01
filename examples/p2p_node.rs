@@ -68,15 +68,24 @@ async fn main() -> Result<()> {
         let src = connection.remote_address();
 
         // loop over incoming messages
-        while let Some(bytes) = incoming_messages.next().await? {
-            println!("Received from {:?} --> {:?}", src, bytes);
-            if bytes == *MSG_MARCO {
-                let reply = Bytes::from(MSG_POLO);
-                connection.send(reply.clone()).await?;
-                println!("Replied to {:?} --> {:?}", src, reply);
+        while let Some((mut bytes, recv, _)) = incoming_messages.next_stream().await? {
+            let mut recv_stream = recv.lock().await;
+            
+            loop {
+                println!("Received from {:?} --> {:?}", src, bytes);
+                if bytes == *MSG_MARCO {
+                    let reply = Bytes::from(MSG_POLO);
+                    connection.send(reply.clone()).await?;
+                    println!("Replied to {:?} --> {:?}", src, reply);
+                }
+                println!();
+                if let Some(b) = recv_stream.next().await? {
+                    bytes = b;
+                } else {
+                    break
+                }
             }
-            println!();
-        }
+        } 
     }
 
     Ok(())
