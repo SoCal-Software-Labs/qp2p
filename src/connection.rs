@@ -10,13 +10,13 @@ use futures::{
     future,
     stream::{Stream, StreamExt, TryStream, TryStreamExt},
 };
-use std::{fmt, net::SocketAddr, pin::Pin, sync::Arc, task, time::Duration, collections::HashMap};
+use rand::Rng;
+use std::{collections::HashMap, fmt, net::SocketAddr, pin::Pin, sync::Arc, task, time::Duration};
 use tokio::{
     sync::{mpsc, watch, Mutex, RwLock},
     time::timeout,
 };
 use tracing::{error, trace, warn};
-use rand::Rng;
 
 // TODO: this seems arbitrary - it may need tuned or made configurable.
 const INCOMING_MESSAGE_BUFFER_LEN: usize = 10_000;
@@ -44,20 +44,22 @@ impl Connection {
         endpoint: quinn::Endpoint,
         default_retry_config: Option<Arc<RetryConfig>>,
         connection: quinn::NewConnection,
-        waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>
+        waiting_pseudo_bi_streams: Arc<
+            RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>,
+        >,
     ) -> (Connection, ConnectionIncoming) {
         // this channel serves to keep the background message listener alive so long as one side of
         // the connection API is alive.
         let (alive_tx, alive_rx) = watch::channel(());
         let alive_tx = Arc::new(alive_tx);
         let peer_address = connection.connection.remote_address();
-        
+
         let conn = Self {
-                inner: connection.connection.clone(),
-                default_retry_config,
-                waiting_pseudo_bi_streams: waiting_pseudo_bi_streams.clone(),
-                _alive_tx: Arc::clone(&alive_tx),
-            };
+            inner: connection.connection.clone(),
+            default_retry_config,
+            waiting_pseudo_bi_streams: waiting_pseudo_bi_streams.clone(),
+            _alive_tx: Arc::clone(&alive_tx),
+        };
 
         (
             conn.clone(),
@@ -69,7 +71,7 @@ impl Connection {
                 alive_tx,
                 alive_rx,
                 waiting_pseudo_bi_streams,
-                connection.connection
+                connection.connection,
             ),
         )
     }
@@ -162,17 +164,34 @@ impl Connection {
     /// automatically correlate response messages, for example.
     ///
     /// Messages sent over the stream will arrive at the peer in the order they were sent.
-    pub async fn open_pseudo_bi(&self) -> Result<(SendStream, Arc<Mutex<RecvStream>>), ConnectionError> {
-        let send_stream = self.inner.open_uni().await?;
+    pub async fn open_pseudo_bi(
+        &self,
+    ) -> Result<(SendStream, Arc<Mutex<RecvStream>>), ConnectionError> {
+        let quinn_send_stream = self.inner.open_uni().await?;
+        let mut send_stream = SendStream::new(quinn_send_stream);
         let (send, mut recv) = mpsc::channel(1);
-        let random_bytes = rand::thread_rng().gen::<[u8; 32]>();
-        let _ = self.waiting_pseudo_bi_streams.write().await.insert(random_bytes.to_vec().into(), send);
-        if let Some(recv_stream) = recv.recv().await {
-            Ok((SendStream::new(send_stream), recv_stream))
-        } else {
+        let random_bytes_arr = rand::thread_rng().gen::<[u8; 32]>();
+        let random_bytes: Bytes = random_bytes_arr.to_vec().into();
+        let _ = self
+            .waiting_pseudo_bi_streams
+            .write()
+            .await
+            .insert(random_bytes.clone(), send);
+
+        if let Err(err) = send_stream
+            .send_wire_msg(WireMsg::EndpointPseudoBiStreamReq(random_bytes))
+            .await
+        {
+            trace!("Connection failed on send {:?}", err);
             Err(ConnectionError::Stopped)
+        } else {
+            if let Some(recv_stream) = recv.recv().await {
+                recv.close();
+                Ok((send_stream, recv_stream))
+            } else {
+                Err(ConnectionError::Stopped)
+            }
         }
-        
     }
 
     /// Close the connection immediately.
@@ -275,10 +294,15 @@ impl RecvStream {
 
     /// Get the next message sent by the peer over this stream.
     pub async fn next(&mut self) -> Result<Option<Bytes>, RecvError> {
-        match self.next_wire_msg().await? {
-            Some(WireMsg::UserMsg(msg)) => Ok(Some(msg)),
-            None => Ok(None),
-            msg => Err(SerializationError::unexpected(&msg).into()),
+        // We may have duplicate EndpointPseudoBiStreamResp messages so we need to
+        // loop until the first UserMsg
+        loop {
+            match self.next_wire_msg().await? {
+                Some(WireMsg::UserMsg(msg)) => break Ok(Some(msg)),
+                Some(WireMsg::EndpointPseudoBiStreamResp(_)) => {}
+                None => break Ok(None),
+                msg => break Err(SerializationError::unexpected(&msg).into()),
+            }
         }
     }
 
@@ -317,11 +341,12 @@ impl ConnectionIncoming {
         bi_streams: quinn::IncomingBiStreams,
         alive_tx: Arc<watch::Sender<()>>,
         alive_rx: watch::Receiver<()>,
-        waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
-        connection: quinn::Connection
+        waiting_pseudo_bi_streams: Arc<
+            RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>,
+        >,
+        connection: quinn::Connection,
     ) -> Self {
         let (message_tx, message_rx) = mpsc::channel(INCOMING_MESSAGE_BUFFER_LEN);
-        
 
         // offload the actual message handling to a background task - the task will exit when
         // `alive_tx` is dropped, which would be when both sides of the connection are dropped.
@@ -333,7 +358,7 @@ impl ConnectionIncoming {
             alive_rx,
             message_tx,
             waiting_pseudo_bi_streams,
-            connection
+            connection,
         );
 
         Self {
@@ -379,7 +404,7 @@ fn start_message_listeners(
         >,
     >,
     waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
-    connection: quinn::Connection
+    connection: quinn::Connection,
 ) {
     let _ = tokio::spawn(listen_on_uni_streams(
         peer_addr,
@@ -387,7 +412,7 @@ fn start_message_listeners(
         alive_rx.clone(),
         message_tx.clone(),
         waiting_pseudo_bi_streams,
-        connection
+        connection,
     ));
 
     let _ = tokio::spawn(listen_on_bi_streams(
@@ -414,7 +439,7 @@ async fn listen_on_uni_streams(
         >,
     >,
     waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
-    connection: quinn::Connection
+    connection: quinn::Connection,
 ) {
     trace!(
         "Started listener for incoming uni-streams from {}",
@@ -444,12 +469,17 @@ async fn listen_on_uni_streams(
                     }
                 }
                 Ok(Some(WireMsg::EndpointPseudoBiStreamReq(id))) => {
-                    if let Err(error) = consume_pseudo_req_messages(id, recv_stream, connection, message_tx).await {
+                    if let Err(error) =
+                        consume_pseudo_req_messages(id, recv_stream, connection, message_tx).await
+                    {
                         trace!("Pseudo BiStream Request, dropping error: {:?}", error);
                     }
                 }
                 Ok(Some(WireMsg::EndpointPseudoBiStreamResp(id))) => {
-                    if let Err(error) = consume_pseudo_resp_messages(id, recv_stream, waiting_pseudo_bi_streams).await {
+                    if let Err(error) =
+                        consume_pseudo_resp_messages(id, recv_stream, waiting_pseudo_bi_streams)
+                            .await
+                    {
                         trace!("Pseudo BiStream Request, dropping error: {:?}", error);
                     }
                 }
@@ -496,7 +526,11 @@ async fn listen_on_uni_streams(
     }
 }
 
-async fn consume_pseudo_req_messages(id: Bytes, recv_stream: quinn::RecvStream, connection: &quinn::Connection, message_tx: &mpsc::Sender<
+async fn consume_pseudo_req_messages(
+    id: Bytes,
+    recv_stream: quinn::RecvStream,
+    connection: &quinn::Connection,
+    message_tx: &mpsc::Sender<
         Result<
             (
                 Bytes,
@@ -505,11 +539,14 @@ async fn consume_pseudo_req_messages(id: Bytes, recv_stream: quinn::RecvStream, 
             ),
             RecvError,
         >,
-    >,) -> Result<(), SendError> {
+    >,
+) -> Result<(), SendError> {
     let mut recv_stream = recv_stream;
     let inner_send_stream = connection.open_uni().await?;
     let mut send_stream = SendStream::new(inner_send_stream);
-    send_stream.send_wire_msg(WireMsg::EndpointPseudoBiStreamResp(id)).await?;
+    send_stream
+        .send_wire_msg(WireMsg::EndpointPseudoBiStreamResp(id))
+        .await?;
 
     // Loop until we hit a UserMsg in case duplicate messages are sent
     loop {
@@ -520,11 +557,13 @@ async fn consume_pseudo_req_messages(id: Bytes, recv_stream: quinn::RecvStream, 
             }
             Ok(None) => break,
             Ok(Some(WireMsg::UserMsg(msg))) => {
-                
                 let recv_arc_mutex = Arc::new(Mutex::new(RecvStream::new(recv_stream)));
                 let send_arc_mutex = Arc::new(Mutex::new(send_stream));
-                
-                if let Err(error) = message_tx.send(Ok((msg, recv_arc_mutex, Some(send_arc_mutex)))).await {
+
+                if let Err(error) = message_tx
+                    .send(Ok((msg, recv_arc_mutex, Some(send_arc_mutex))))
+                    .await
+                {
                     // if we can't send the result, the receiving end is closed so we should stop
                     trace!("Receiver gone, dropping error: {:?}", error);
                 }
@@ -540,14 +579,18 @@ async fn consume_pseudo_req_messages(id: Bytes, recv_stream: quinn::RecvStream, 
     Ok(())
 }
 
-async fn consume_pseudo_resp_messages(id: Bytes, recv_stream: quinn::RecvStream, waiting_pseudo_bi_streams: &Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,) -> Result<(), SendError> {
+async fn consume_pseudo_resp_messages(
+    id: Bytes,
+    recv_stream: quinn::RecvStream,
+    waiting_pseudo_bi_streams: &Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+) -> Result<(), SendError> {
     let recv_arc_mutex = Arc::new(Mutex::new(RecvStream::new(recv_stream)));
-                    if let Some(sender) = waiting_pseudo_bi_streams.read().await.get(&id) {
-                        if let Err(err) = sender.try_send(recv_arc_mutex) {
-                            trace!("Could not send stream to waiting Pseudo BiStream {:?}", err)
-                        };
-                        let _ = waiting_pseudo_bi_streams.write().await.remove(&id);
-                    }
+    if let Some(sender) = waiting_pseudo_bi_streams.read().await.get(&id) {
+        if let Err(err) = sender.try_send(recv_arc_mutex) {
+            trace!("Could not send stream to waiting Pseudo BiStream {:?}", err)
+        };
+        let _ = waiting_pseudo_bi_streams.write().await.remove(&id);
+    }
 
     Ok(())
 }
@@ -803,10 +846,10 @@ mod tests {
     use color_eyre::eyre::{bail, Result};
     use futures::{StreamExt, TryStreamExt};
     use quinn::Endpoint as QuinnEndpoint;
-    use std::time::Duration;
-    use std::sync::Arc;
     use std::collections::HashMap;
-    use tokio::sync::{Mutex, RwLock};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::RwLock;
 
     #[tokio::test]
     #[tracing_test::traced_test]
@@ -824,12 +867,17 @@ mod tests {
                 peer1.clone(),
                 None,
                 peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-                Arc::new(RwLock::new(HashMap::new()))
+                Arc::new(RwLock::new(HashMap::new())),
             );
 
             let (p2_tx, mut p2_rx) =
                 if let Some(connection) = timeout(peer2_incoming.then(|c| c).try_next()).await?? {
-                    Connection::new(peer2.clone(), None, connection, Arc::new(RwLock::new(HashMap::new())))
+                    Connection::new(
+                        peer2.clone(),
+                        None,
+                        connection,
+                        Arc::new(RwLock::new(HashMap::new())),
+                    )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
                 };
@@ -885,12 +933,17 @@ mod tests {
             peer1.clone(),
             None,
             peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-            Arc::new(RwLock::new(HashMap::new()))
+            Arc::new(RwLock::new(HashMap::new())),
         );
 
         let (_, mut p2_rx) =
             if let Some(connection) = timeout(peer2_incoming.then(|c| c).try_next()).await?? {
-                Connection::new(peer2.clone(), None, connection, Arc::new(RwLock::new(HashMap::new())))
+                Connection::new(
+                    peer2.clone(),
+                    None,
+                    connection,
+                    Arc::new(RwLock::new(HashMap::new())),
+                )
             } else {
                 bail!("did not receive incoming connection when one was expected");
             };
@@ -928,13 +981,18 @@ mod tests {
                 peer1.clone(),
                 None,
                 peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-                Arc::new(RwLock::new(HashMap::new()))
+                Arc::new(RwLock::new(HashMap::new())),
             );
 
             // we need to accept the connection on p2, or the message won't be processed
             let _p2_handle =
                 if let Some(connection) = timeout(peer2_incoming.then(|c| c).try_next()).await?? {
-                    Connection::new(peer2.clone(), None, connection, Arc::new(RwLock::new(HashMap::new())))
+                    Connection::new(
+                        peer2.clone(),
+                        None,
+                        connection,
+                        Arc::new(RwLock::new(HashMap::new())),
+                    )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
                 };
@@ -981,13 +1039,18 @@ mod tests {
                 peer1.clone(),
                 None,
                 peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-                Arc::new(RwLock::new(HashMap::new()))
+                Arc::new(RwLock::new(HashMap::new())),
             );
 
             // we need to accept the connection on p2, or the message won't be processed
             let _p2_handle =
                 if let Some(connection) = timeout(peer2_incoming.then(|c| c).try_next()).await?? {
-                    Connection::new(peer2.clone(), None, connection, Arc::new(RwLock::new(HashMap::new())))
+                    Connection::new(
+                        peer2.clone(),
+                        None,
+                        connection,
+                        Arc::new(RwLock::new(HashMap::new())),
+                    )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
                 };
@@ -1000,7 +1063,12 @@ mod tests {
             // we need to accept the connection on p1, or the message won't be processed
             let _p1_handle =
                 if let Some(connection) = timeout(peer1_incoming.then(|c| c).try_next()).await?? {
-                    Connection::new(peer1.clone(), None, connection, Arc::new(RwLock::new(HashMap::new())))
+                    Connection::new(
+                        peer1.clone(),
+                        None,
+                        connection,
+                        Arc::new(RwLock::new(HashMap::new())),
+                    )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
                 };

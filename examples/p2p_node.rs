@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         // loop over incoming messages
         while let Some((mut bytes, recv, _)) = incoming_messages.next_stream().await? {
             let mut recv_stream = recv.lock().await;
-            
+
             loop {
                 println!("Received from {:?} --> {:?}", src, bytes);
                 if bytes == *MSG_MARCO {
@@ -82,10 +82,10 @@ async fn main() -> Result<()> {
                 if let Some(b) = recv_stream.next().await? {
                     bytes = b;
                 } else {
-                    break
+                    break;
                 }
             }
-        } 
+        }
     }
 
     Ok(())

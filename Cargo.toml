@@ -33,12 +33,11 @@ tracing = "~0.1.26"
 webpki = "~0.21.3"
 rustls = { version = "0.20.2", default-features = false, features = ["quic", "dangerous_configuration"] }
 structopt = {version = "0.3.25", optional = true}
-rand = "0.8.5"
+rand = "~0.7.3"
 
 [dev-dependencies]
 color-eyre = "0.5.11"
 ctor = "0.1.20"
-rand = "~0.7.3"
 tiny-keccak = { version = "2.0.2", features = ["sha3"] }
 tokio = { version = "1.12.0", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.2.19"

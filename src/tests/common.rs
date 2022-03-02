@@ -157,7 +157,12 @@ async fn no_reuse_incoming_connection() -> Result<()> {
     b_to_a.send(msg1.clone()).await?;
 
     // Alice receives no message over the original connection
-    if alice_incoming_messages.next_stream().timeout().await.is_ok() {
+    if alice_incoming_messages
+        .next_stream()
+        .timeout()
+        .await
+        .is_ok()
+    {
         bail!("Received unexpected message");
     }
 
@@ -172,7 +177,7 @@ async fn no_reuse_incoming_connection() -> Result<()> {
     };
 
     if let Ok(Ok(Some((message, _, _)))) = alice_incoming_messages.next_stream().timeout().await {
-        assert_eq!(message,msg1);
+        assert_eq!(message, msg1);
     } else {
         bail!("No incoming message");
     }
@@ -296,13 +301,17 @@ async fn multiple_concurrent_connects_to_the_same_peer() -> Result<()> {
             }
 
             // Both messages are received  at the alice end
-            if let Ok(Ok(Some((message, _, _)))) = alice_incoming_messages.next_stream().timeout().await {
+            if let Ok(Ok(Some((message, _, _)))) =
+                alice_incoming_messages.next_stream().timeout().await
+            {
                 assert_eq!(message, msg0);
             } else {
                 bail!("No message received from Bob");
             }
 
-            if let Ok(Ok(Some((message, _, _)))) = alice_incoming_messages_2.next_stream().timeout().await {
+            if let Ok(Ok(Some((message, _, _)))) =
+                alice_incoming_messages_2.next_stream().timeout().await
+            {
                 assert_eq!(message, msg1);
             } else {
                 bail!("No message from carol");
@@ -357,7 +366,9 @@ async fn multiple_connections_with_many_concurrent_messages() -> Result<()> {
             while let Some((connection, mut recv_incoming_messages)) =
                 recv_incoming_connections.next().await
             {
-                while let Ok(Ok(Some((msg, _, _)))) = recv_incoming_messages.next_stream().timeout().await {
+                while let Ok(Ok(Some((msg, _, _)))) =
+                    recv_incoming_messages.next_stream().timeout().await
+                {
                     info!(
                         "received from {:?} with message size {}",
                         connection.remote_address(),
@@ -421,7 +432,9 @@ async fn multiple_connections_with_many_concurrent_messages() -> Result<()> {
                 );
                 let mut all_received_msgs = 0;
 
-                while let Ok(Ok(Some((msg, _, _)))) = recv_incoming_messages.next_stream().timeout().await {
+                while let Ok(Ok(Some((msg, _, _)))) =
+                    recv_incoming_messages.next_stream().timeout().await
+                {
                     info!(
                         "#{} received from server {:?} with message size {}",
                         id,
@@ -478,7 +491,9 @@ async fn multiple_connections_with_many_larger_concurrent_messages() -> Result<(
             while let Some((connection, mut recv_incoming_messages)) =
                 recv_incoming_connections.next().await
             {
-                while let Ok(Ok(Some((msg, _, _)))) = recv_incoming_messages.next_stream().timeout().await {
+                while let Ok(Ok(Some((msg, _, _)))) =
+                    recv_incoming_messages.next_stream().timeout().await
+                {
                     info!(
                         "received from {:?} with message size {}",
                         connection.remote_address(),
@@ -542,7 +557,9 @@ async fn multiple_connections_with_many_larger_concurrent_messages() -> Result<(
                 );
 
                 let mut all_received_msgs = 0;
-                while let Ok(Ok(Some((msg, _, _)))) = recv_incoming_messages.next_stream().timeout().await {
+                while let Ok(Ok(Some((msg, _, _)))) =
+                    recv_incoming_messages.next_stream().timeout().await
+                {
                     info!(
                         "#{} received from server {:?} with message size {}",
                         id,
@@ -613,7 +630,9 @@ async fn many_messages() -> Result<()> {
             {
                 assert_eq!(connection.remote_address(), send_addr);
 
-                while let Ok(Ok(Some((msg, _, _)))) = recv_incoming_messages.next_stream().timeout().await {
+                while let Ok(Ok(Some((msg, _, _)))) =
+                    recv_incoming_messages.next_stream().timeout().await
+                {
                     let id = usize::from_le_bytes(msg[..].try_into().unwrap());
                     info!("received {}", id);
 

@@ -18,19 +18,19 @@ use super::{
         SerializationError,
     },
 };
+use bytes::Bytes;
 use futures::StreamExt;
 use quinn::Endpoint as QuinnEndpoint;
 use std::{
+    collections::HashMap,
     net::{IpAddr, SocketAddr},
     sync::Arc,
-    collections::HashMap,
 };
 use tokio::sync::broadcast::{self, Sender};
-use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver as MpscReceiver};
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, trace, warn};
-use bytes::Bytes;
 
 // Number of seconds before timing out the IGD request to forward a port.
 #[cfg(feature = "igd")]
@@ -70,7 +70,6 @@ pub struct Endpoint {
 
     termination_tx: Sender<()>,
     waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
-
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -141,7 +140,7 @@ impl Endpoint {
             quinn_endpoint,
             retry_config: config.retry_config,
             termination_tx,
-            waiting_pseudo_bi_streams: waiting_pseudo_bi_streams.clone()
+            waiting_pseudo_bi_streams: waiting_pseudo_bi_streams.clone(),
         };
 
         let contact = endpoint.connect_to_any(contacts).await;
@@ -383,7 +382,7 @@ impl Endpoint {
                             self.quinn_endpoint.clone(),
                             Some(self.retry_config.clone()),
                             new_conn,
-                            self.waiting_pseudo_bi_streams.clone()
+                            self.waiting_pseudo_bi_streams.clone(),
                         );
 
                         Ok((connection, connection_incoming))
@@ -519,7 +518,7 @@ pub(super) fn listen_for_incoming_connections(
                             quinn_endpoint.clone(),
                             Some(retry_config.clone()),
                             connection,
-                            waiting_pseudo_bi_streams.clone()
+                            waiting_pseudo_bi_streams.clone(),
                         );
 
                         if connection_tx

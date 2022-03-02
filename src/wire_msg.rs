@@ -131,16 +131,12 @@ impl fmt::Display for WireMsg {
                 "WireMsg::EndpointEchoResp({})",
                 if *valid { "Valid" } else { "Invalid" }
             ),
-            WireMsg::EndpointPseudoBiStreamResp(id) => write!(
-                f,
-                "WireMsg::EndpointPseudoBiStreamResp({:?})",
-                id
-            ),
-            WireMsg::EndpointPseudoBiStreamReq(id) => write!(
-                f,
-                "WireMsg::EndpointPseudoBiStreamReq({:?})",
-                id
-            ),
+            WireMsg::EndpointPseudoBiStreamResp(id) => {
+                write!(f, "WireMsg::EndpointPseudoBiStreamResp({:?})", id)
+            }
+            WireMsg::EndpointPseudoBiStreamReq(id) => {
+                write!(f, "WireMsg::EndpointPseudoBiStreamReq({:?})", id)
+            }
         }
     }
 }
