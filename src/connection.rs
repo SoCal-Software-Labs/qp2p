@@ -13,7 +13,7 @@ use futures::{
 use rand::Rng;
 use std::{collections::HashMap, fmt, net::SocketAddr, pin::Pin, sync::Arc, task, time::Duration};
 use tokio::{
-    sync::{mpsc, watch, Mutex, RwLock},
+    sync::{mpsc, watch, Mutex},
     time::timeout,
 };
 use tracing::{error, trace, warn};
@@ -32,7 +32,7 @@ const QP2P_CLOSED_CONNECTION: &str = "The connection was closed intentionally by
 pub struct Connection {
     inner: quinn::Connection,
     default_retry_config: Option<Arc<RetryConfig>>,
-    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+    waiting_pseudo_bi_streams: Arc<Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
     // A reference to the 'alive' marker for the connection. This isn't read by `Connection`, but
     // must be held to keep background listeners alive until both halves of the connection are
     // dropped.
@@ -45,7 +45,7 @@ impl Connection {
         default_retry_config: Option<Arc<RetryConfig>>,
         connection: quinn::NewConnection,
         waiting_pseudo_bi_streams: Arc<
-            RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>,
+            Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>,
         >,
     ) -> (Connection, ConnectionIncoming) {
         // this channel serves to keep the background message listener alive so long as one side of
@@ -174,7 +174,7 @@ impl Connection {
         let random_bytes: Bytes = random_bytes_arr.to_vec().into();
         let _ = self
             .waiting_pseudo_bi_streams
-            .write()
+            .lock()
             .await
             .insert(random_bytes.clone(), send);
 
@@ -342,7 +342,7 @@ impl ConnectionIncoming {
         alive_tx: Arc<watch::Sender<()>>,
         alive_rx: watch::Receiver<()>,
         waiting_pseudo_bi_streams: Arc<
-            RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>,
+            Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>,
         >,
         connection: quinn::Connection,
     ) -> Self {
@@ -403,7 +403,7 @@ fn start_message_listeners(
             RecvError,
         >,
     >,
-    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+    waiting_pseudo_bi_streams: Arc<Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
     connection: quinn::Connection,
 ) {
     let _ = tokio::spawn(listen_on_uni_streams(
@@ -438,7 +438,7 @@ async fn listen_on_uni_streams(
             RecvError,
         >,
     >,
-    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+    waiting_pseudo_bi_streams: Arc<Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
     connection: quinn::Connection,
 ) {
     trace!(
@@ -582,14 +582,15 @@ async fn consume_pseudo_req_messages(
 async fn consume_pseudo_resp_messages(
     id: Bytes,
     recv_stream: quinn::RecvStream,
-    waiting_pseudo_bi_streams: &Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+    waiting_pseudo_bi_streams: &Arc<Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
 ) -> Result<(), SendError> {
     let recv_arc_mutex = Arc::new(Mutex::new(RecvStream::new(recv_stream)));
-    if let Some(sender) = waiting_pseudo_bi_streams.read().await.get(&id) {
+    let mut map = waiting_pseudo_bi_streams.lock().await;
+    if let Some(sender) = map.get(&id) {
         if let Err(err) = sender.try_send(recv_arc_mutex) {
             trace!("Could not send stream to waiting Pseudo BiStream {:?}", err)
         };
-        let _ = waiting_pseudo_bi_streams.write().await.remove(&id);
+        let _ = map.remove(&id);
     }
 
     Ok(())
@@ -849,7 +850,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::RwLock;
+    use tokio::sync::Mutex;
 
     #[tokio::test]
     #[tracing_test::traced_test]
@@ -867,7 +868,7 @@ mod tests {
                 peer1.clone(),
                 None,
                 peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-                Arc::new(RwLock::new(HashMap::new())),
+                Arc::new(Mutex::new(HashMap::new())),
             );
 
             let (p2_tx, mut p2_rx) =
@@ -876,7 +877,7 @@ mod tests {
                         peer2.clone(),
                         None,
                         connection,
-                        Arc::new(RwLock::new(HashMap::new())),
+                        Arc::new(Mutex::new(HashMap::new())),
                     )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
@@ -933,7 +934,7 @@ mod tests {
             peer1.clone(),
             None,
             peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         );
 
         let (_, mut p2_rx) =
@@ -942,7 +943,7 @@ mod tests {
                     peer2.clone(),
                     None,
                     connection,
-                    Arc::new(RwLock::new(HashMap::new())),
+                    Arc::new(Mutex::new(HashMap::new())),
                 )
             } else {
                 bail!("did not receive incoming connection when one was expected");
@@ -981,7 +982,7 @@ mod tests {
                 peer1.clone(),
                 None,
                 peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-                Arc::new(RwLock::new(HashMap::new())),
+                Arc::new(Mutex::new(HashMap::new())),
             );
 
             // we need to accept the connection on p2, or the message won't be processed
@@ -991,7 +992,7 @@ mod tests {
                         peer2.clone(),
                         None,
                         connection,
-                        Arc::new(RwLock::new(HashMap::new())),
+                        Arc::new(Mutex::new(HashMap::new())),
                     )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
@@ -1039,7 +1040,7 @@ mod tests {
                 peer1.clone(),
                 None,
                 peer1.connect(peer2.local_addr()?, SERVER_NAME)?.await?,
-                Arc::new(RwLock::new(HashMap::new())),
+                Arc::new(Mutex::new(HashMap::new())),
             );
 
             // we need to accept the connection on p2, or the message won't be processed
@@ -1049,7 +1050,7 @@ mod tests {
                         peer2.clone(),
                         None,
                         connection,
-                        Arc::new(RwLock::new(HashMap::new())),
+                        Arc::new(Mutex::new(HashMap::new())),
                     )
                 } else {
                     bail!("did not receive incoming connection when one was expected");
@@ -1067,7 +1068,7 @@ mod tests {
                         peer1.clone(),
                         None,
                         connection,
-                        Arc::new(RwLock::new(HashMap::new())),
+                        Arc::new(Mutex::new(HashMap::new())),
                     )
                 } else {
                     bail!("did not receive incoming connection when one was expected");

@@ -28,7 +28,7 @@ use std::{
 };
 use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver as MpscReceiver};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, trace, warn};
 
@@ -69,7 +69,7 @@ pub struct Endpoint {
     retry_config: Arc<RetryConfig>,
 
     termination_tx: Sender<()>,
-    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+    waiting_pseudo_bi_streams: Arc<Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -132,7 +132,7 @@ impl Endpoint {
         // set client config used for any outgoing connections
         quinn_endpoint.set_default_client_config(config.client);
 
-        let waiting_pseudo_bi_streams = Arc::new(RwLock::new(HashMap::new()));
+        let waiting_pseudo_bi_streams = Arc::new(Mutex::new(HashMap::new()));
 
         let mut endpoint = Self {
             local_addr: quinn_endpoint_socket_addr,
@@ -219,7 +219,7 @@ impl Endpoint {
         // retrieve the actual used socket addr
         let local_quinn_socket_addr = quinn_endpoint.local_addr()?;
 
-        let waiting_pseudo_bi_streams = Arc::new(RwLock::new(HashMap::new()));
+        let waiting_pseudo_bi_streams = Arc::new(Mutex::new(HashMap::new()));
 
         quinn_endpoint.set_default_client_config(config.client);
 
@@ -507,7 +507,7 @@ pub(super) fn listen_for_incoming_connections(
     connection_tx: mpsc::Sender<(Connection, ConnectionIncoming)>,
     quinn_endpoint: quinn::Endpoint,
     retry_config: Arc<RetryConfig>,
-    waiting_pseudo_bi_streams: Arc<RwLock<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
+    waiting_pseudo_bi_streams: Arc<Mutex<HashMap<Bytes, mpsc::Sender<Arc<Mutex<RecvStream>>>>>>,
 ) {
     let _ = tokio::spawn(async move {
         loop {
